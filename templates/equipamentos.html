@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Equipamentos</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+</head>
+<body class="p-5">
+    <div class="container">
+        <h2 class="mb-4">Cadastro de Equipamentos</h2>
+        <a href="/dashboard" class="btn btn-secondary mb-3">Voltar</a>
+
+        <form method="POST" class="mb-4">
+            <input type="text" name="nome" class="form-control mb-2" placeholder="Nome do equipamento (ex: Sala de Informática, Notebook)" required>
+            <input type="number" name="quantidade" class="form-control mb-2" placeholder="Quantidade (ex: 1 para sala, 30 para notebooks)" min="1" required>
+            <button class="btn btn-primary">Adicionar</button>
+        </form>
+
+        <table class="table table-bordered">
+            <thead><tr><th>Nome</th><th>Quantidade</th></tr></thead>
+            <tbody>
+                {% for e in equipamentos %}
+                <tr>
+                    <td>{{ e.nome }}</td>
+                    <td>{{ e.quantidade }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="2">Nenhum equipamento cadastrado.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</body>
+</html>
