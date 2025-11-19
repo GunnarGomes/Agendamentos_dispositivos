@@ -1,4 +1,4 @@
-from flask import Flask, redirect, url_for, session, render_template, request
+from flask import Flask, redirect, url_for, session, render_template, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 import requests
 from oauthlib.oauth2 import WebApplicationClient
@@ -6,14 +6,12 @@ import json
 import config
 import os
 
-
 app = Flask(__name__)
 app.secret_key = config.SECRET_KEY
 app.config['SQLALCHEMY_DATABASE_URI'] = config.DATABASE_URI
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
-
 
 db = SQLAlchemy(app)
 client = WebApplicationClient(config.GOOGLE_CLIENT_ID)
@@ -30,12 +28,17 @@ class Equipamento(db.Model):
     nome = db.Column(db.String(200))
     quantidade = db.Column(db.Integer)
 
-class Agendamento(db.Model):
+class Booking(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey("user.id"))
-    equipamento_id = db.Column(db.Integer, db.ForeignKey("equipamento.id"))
-    data = db.Column(db.String(20))
-    quantidade_reservada = db.Column(db.Integer)
+    user_email = db.Column(db.String(200), nullable=False)
+    equipment_id = db.Column(db.Integer, db.ForeignKey("equipamento.id"), nullable=False)
+    date = db.Column(db.String(20), nullable=False)
+    shift = db.Column(db.String(20), nullable=False)
+
+    aulas = db.Column(db.JSON, nullable=False)  # lista de aulas
+    quantidade = db.Column(db.Integer, nullable=False)
+
+    equipamento = db.relationship("Equipamento")
 
 # -------------------- AUTENTICAÇÃO GOOGLE --------------------
 def get_google_provider_cfg():
@@ -80,7 +83,6 @@ def callback():
 
     data = userinfo_response.json()
 
-    # cria usuário se não existir
     user = User.query.filter_by(email=data["email"]).first()
     if not user:
         user = User(
@@ -92,6 +94,9 @@ def callback():
         db.session.commit()
 
     session['user_id'] = user.id
+    session['email'] = user.email
+    session['nome'] = user.nome
+
     return redirect(url_for('dashboard'))
 
 @app.route("/logout")
@@ -99,17 +104,43 @@ def logout():
     session.clear()
     return redirect("/")
 
-# -------------------- ROTAS PRINCIPAIS --------------------
+# -------------------- PÁGINAS --------------------
 @app.route("/")
 def index():
     return render_template("index.html")
 
 @app.route("/dashboard")
 def dashboard():
-    if 'user_id' not in session:
-        return redirect(url_for('index'))
+    if "email" not in session:
+        return redirect("/login")
+
     equipamentos = Equipamento.query.all()
-    return render_template("dashboard.html", equipamentos=equipamentos)
+    agendamentos = Booking.query.all()
+
+    equipamentos_info = []
+
+    for eq in equipamentos:
+        total = eq.quantidade
+        
+        # Soma todas as quantidades agendadas para esse equipamento
+        usados = db.session.query(db.func.sum(Booking.quantidade)) \
+            .filter(Booking.equipment_id == eq.id).scalar() or 0
+
+        disponivel = total - usados
+
+        equipamentos_info.append({
+            "id": eq.id,
+            "nome": eq.nome,
+            "total": total,
+            "usados": usados,
+            "disponivel": disponivel
+        })
+
+    return render_template(
+        "dashboard.html",
+        equipamentos=equipamentos_info,
+        agendamentos=agendamentos
+    )
 
 @app.route("/equipamentos", methods=["GET", "POST"])
 def equipamentos():
@@ -126,6 +157,32 @@ def equipamentos():
     lista = Equipamento.query.all()
     return render_template("equipamentos.html", equipamentos=lista)
 
+# -------------------- API: Verificar disponibilidade --------------------
+@app.route("/api/disponibilidade/<int:equip_id>")
+def api_disponibilidade(equip_id):
+    date = request.args.get("data")
+    shift = request.args.get("turno")
+
+    equip = Equipamento.query.get_or_404(equip_id)
+
+    # inicia com todo mundo disponível
+    disponivel = {i: equip.quantidade for i in range(1, 8)}
+
+    bookings = Booking.query.filter_by(
+        equipment_id=equip_id,
+        date=date,
+        shift=shift
+    ).all()
+
+    for b in bookings:
+        for aula in b.aulas:
+            disponivel[aula] -= b.quantidade
+            if disponivel[aula] < 0:
+                disponivel[aula] = 0
+
+    return jsonify(disponivel)
+
+# -------------------- AGENDAR --------------------
 @app.route("/agendar/<int:id>", methods=["GET", "POST"])
 def agendar(id):
     if 'user_id' not in session:
@@ -134,23 +191,49 @@ def agendar(id):
     equipamento = Equipamento.query.get_or_404(id)
 
     if request.method == "POST":
-        data = request.form.get('data')
-        quantidade = int(request.form.get('quantidade', 1))
-        user_id = session['user_id']
+        date = request.form.get('data')
+        shift = request.form.get('turno')
+        aulas = sorted(map(int, request.form.getlist('aulas')))
+        quantidade = int(request.form.get("quantidade"))
 
-        # simples: não valida conflitos aqui (podemos adicionar depois)
-        novo = Agendamento(
-            user_id=user_id,
-            equipamento_id=id,
-            data=data,
-            quantidade_reservada=quantidade
+        if not aulas:
+            return "Selecione ao menos 1 aula", 400
+
+        # calcular disponível
+        disponivel = {i: equipamento.quantidade for i in range(1, 8)}
+
+        bookings = Booking.query.filter_by(
+            equipment_id=id,
+            date=date,
+            shift=shift
+        ).all()
+
+        for b in bookings:
+            for aula in b.aulas:
+                disponivel[aula] -= b.quantidade
+
+        # validar disponibilidade
+        for aula in aulas:
+            if quantidade > disponivel[aula]:
+                return f"Erro: Aula {aula} só possui {disponivel[aula]} disponíveis.", 400
+
+        novo = Booking(
+            user_email=session['email'],
+            equipment_id=id,
+            date=date,
+            shift=shift,
+            aulas=aulas,
+            quantidade=quantidade
         )
+
         db.session.add(novo)
         db.session.commit()
-        return redirect(url_for('dashboard'))
+
+        return redirect(url_for("dashboard"))
 
     return render_template("agendar.html", equipamento=equipamento)
 
+# -------------------- RUN --------------------
 if __name__ == "__main__":
     with app.app_context():
         db.create_all()

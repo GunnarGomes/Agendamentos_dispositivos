@@ -4,25 +4,252 @@
     <meta charset="utf-8">
     <title>Agendar</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+    <style>
+        .aula-box { padding: 8px; border-radius: 6px; border: 1px solid #ddd; margin-bottom: 8px; }
+        .aula-disabled { background: #f8d7da; color: #721c24; border-color: #f5c6cb; }
+        .aula-enabled { background: #e9f7ef; color: #0f5132; border-color: #d1e7dd; cursor: pointer; }
+        .small-note { font-size: 0.9rem; color: #555; }
+    </style>
 </head>
+
 <body class="p-5">
     <div class="container">
+
         <h2 class="mb-4">Agendar: {{ equipamento.nome }}</h2>
         <a href="/dashboard" class="btn btn-secondary mb-3">Voltar</a>
 
-        <form method="POST">
+        <form method="POST" id="form-agendar">
+
+            <!-- DATA -->
             <div class="mb-3">
                 <label class="form-label">Data</label>
-                <input type="date" name="data" class="form-control" required>
+                <input type="date" name="data" id="data" class="form-control" required>
             </div>
 
+            <!-- TURNO -->
             <div class="mb-3">
-                <label class="form-label">Quantidade (máx {{ equipamento.quantidade }})</label>
-                <input type="number" name="quantidade" class="form-control" min="1" max="{{ equipamento.quantidade }}" value="1" required>
+                <label class="form-label">Turno</label>
+                <select name="turno" id="turno" class="form-control" required>
+                    <option value="">-- selecione turno --</option>
+                    <option value="morning">Manhã</option>
+                    <option value="afternoon">Tarde</option>
+                    <option value="night">Noite</option>
+                </select>
             </div>
 
-            <button class="btn btn-primary">Confirmar Agendamento</button>
+            <!-- BOTÃO PARA CARREGAR AULAS -->
+            <div class="mb-3">
+                <button type="button" id="btn-carregar" class="btn btn-info">Carregar disponibilidade</button>
+                <span id="carregar-msg" class="small-note ms-2"></span>
+            </div>
+
+            <!-- AULAS (1 a 7) -->
+            <div class="mb-3">
+                <label class="form-label">Aulas (selecione uma ou várias)</label>
+
+                <div id="aulas-container" class="row gy-2">
+                    <!-- boxes geradas por JS -->
+                    {% for i in range(1, 8) %}
+                    <div class="col-3">
+                        <div class="aula-box aula-disabled" id="box-aula-{{ i }}" data-aula="{{ i }}">
+                            <div class="form-check">
+                                <input class="form-check-input aula-checkbox" type="checkbox" name="aulas" value="{{ i }}" id="aula{{ i }}" disabled>
+                                <label class="form-check-label" for="aula{{ i }}">
+                                    Aula {{ i }}
+                                </label>
+                            </div>
+                            <div class="small-note mt-1" id="avail-{{ i }}">Disponível: —</div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+
+            <!-- QUANTIDADE -->
+            <div class="mb-3">
+                <label class="form-label">Quantidade a reservar (máx será ajustado automaticamente)</label>
+                <input type="number"
+                       name="quantidade"
+                       id="quantidade"
+                       class="form-control"
+                       min="1"
+                       value="1"
+                       required>
+                <div class="small-note mt-1" id="quant-info">Escolha data/turno e aulas para ver o máximo disponível.</div>
+            </div>
+
+            <button class="btn btn-primary" id="btn-submit">Confirmar Agendamento</button>
+
         </form>
     </div>
+
+<script>
+(function(){
+    const equipId = {{ equipamento.id }}; // variável do template
+    const btnCarregar = document.getElementById('btn-carregar');
+    const dataInput = document.getElementById('data');
+    const turnoSelect = document.getElementById('turno');
+    const carregarmsg = document.getElementById('carregar-msg');
+    const quantidadeInput = document.getElementById('quantidade');
+    const quantInfo = document.getElementById('quant-info');
+    const aulasContainer = document.getElementById('aulas-container');
+    const checkboxes = document.querySelectorAll('.aula-checkbox');
+    let disponibilidade = {}; // {1: n, 2: n, ...}
+
+    function resetAulasUI() {
+        disponibilidade = {};
+        checkboxes.forEach(cb => {
+            cb.checked = false;
+            cb.disabled = true;
+            const id = cb.value;
+            document.getElementById('avail-' + id).textContent = 'Disponível: —';
+            const box = document.getElementById('box-aula-' + id);
+            box.classList.remove('aula-enabled');
+            box.classList.add('aula-disabled');
+        });
+        quantidadeInput.value = 1;
+        quantidadeInput.min = 1;
+        quantidadeInput.max = 999999;
+        quantInfo.textContent = 'Escolha data/turno e aulas para ver o máximo disponível.';
+    }
+
+    async function carregarDisponibilidade() {
+        const date = dataInput.value;
+        const turno = turnoSelect.value;
+        if (!date || !turno) {
+            carregarmsg.textContent = 'Escolha data e turno primeiro.';
+            return;
+        }
+        carregarmsg.textContent = 'Carregando...';
+        resetAulasUI();
+
+        try {
+            const res = await fetch(`/api/disponibilidade/${equipId}?data=${encodeURIComponent(date)}&turno=${encodeURIComponent(turno)}`);
+            if (!res.ok) {
+                throw new Error('Erro ao buscar disponibilidade');
+            }
+            const data = await res.json();
+            disponibilidade = data; // {1: n, 2: n, ...}
+
+            // atualizar UI
+            for (let i = 1; i <= 7; i++) {
+                const avail = disponibilidade[i] ?? 0;
+                const cb = document.getElementById('aula' + i);
+                const availText = document.getElementById('avail-' + i);
+                const box = document.getElementById('box-aula-' + i);
+
+                availText.textContent = 'Disponível: ' + avail;
+                if (avail > 0) {
+                    cb.disabled = false;
+                    box.classList.remove('aula-disabled');
+                    box.classList.add('aula-enabled');
+                } else {
+                    cb.disabled = true;
+                    box.classList.remove('aula-enabled');
+                    box.classList.add('aula-disabled');
+                }
+            }
+
+            carregarmsg.textContent = 'Disponibilidade carregada.';
+            quantInfo.textContent = 'Selecione as aulas que deseja; o máximo da quantidade será atualizado.';
+            updateMaxFromSelection();
+        } catch (err) {
+            carregarmsg.textContent = 'Erro ao carregar disponibilidade.';
+            console.error(err);
+        }
+    }
+
+    function updateMaxFromSelection() {
+        // pega aulas selecionadas e calcula mínimo disponível
+        const selected = Array.from(document.querySelectorAll('.aula-checkbox:checked')).map(cb => parseInt(cb.value));
+        if (selected.length === 0) {
+            // nenhum selecionado
+            quantidadeInput.max = 999999;
+            quantInfo.textContent = 'Nenhuma aula selecionada.';
+            return;
+        }
+
+        let minAvail = Infinity;
+        selected.forEach(a => {
+            const aAvail = disponibilidade[a] ?? 0;
+            if (aAvail < minAvail) minAvail = aAvail;
+        });
+
+        if (!isFinite(minAvail)) minAvail = 0;
+        if (minAvail < 1) {
+            quantInfo.textContent = 'Erro: alguma aula não possui disponibilidade suficiente.';
+            quantidadeInput.value = 1;
+            quantidadeInput.max = 0;
+            quantidadeInput.min = 0;
+        } else {
+            quantidadeInput.max = minAvail;
+            if (parseInt(quantidadeInput.value) > minAvail) quantidadeInput.value = minAvail;
+            quantidadeInput.min = 1;
+            quantInfo.textContent = `Máximo por sua seleção: ${minAvail} unidades (menor disponível entre as aulas escolhidas).`;
+        }
+    }
+
+    // quando clica no box de aula, marca/desmarca checkbox
+    aulasContainer.addEventListener('click', function(e){
+        const box = e.target.closest('.aula-box');
+        if (!box) return;
+        const aula = box.dataset.aula;
+        const cb = document.getElementById('aula' + aula);
+        if (cb.disabled) return;
+        cb.checked = !cb.checked;
+        updateMaxFromSelection();
+    });
+
+    // também reagir quando checkbox muda (por exemplo via teclado)
+    checkboxes.forEach(cb => cb.addEventListener('change', updateMaxFromSelection));
+
+    btnCarregar.addEventListener('click', carregarDisponibilidade);
+
+    // impedir envio se quantidade > max
+    const form = document.getElementById('form-agendar');
+    form.addEventListener('submit', function(ev){
+        // verificar campos
+        const date = dataInput.value;
+        const turno = turnoSelect.value;
+        const selected = Array.from(document.querySelectorAll('.aula-checkbox:checked')).map(cb => parseInt(cb.value));
+        const qty = parseInt(quantidadeInput.value);
+
+        if (!date || !turno) {
+            ev.preventDefault();
+            alert('Escolha data e turno antes de agendar.');
+            return;
+        }
+        if (selected.length === 0) {
+            ev.preventDefault();
+            alert('Selecione ao menos 1 aula.');
+            return;
+        }
+        // recalc disponibilidade client-side para evitar tentativa óbvia
+        let minAvail = Infinity;
+        selected.forEach(a => {
+            const aAvail = disponibilidade[a] ?? 0;
+            if (aAvail < minAvail) minAvail = aAvail;
+        });
+        if (!isFinite(minAvail)) minAvail = 0;
+        if (qty < 1 || qty > minAvail) {
+            ev.preventDefault();
+            alert(`Quantidade inválida. Máximo permitido para sua seleção: ${minAvail}`);
+            return;
+        }
+
+        // antes de submeter, garantir que as aulas selecionadas serão enviadas como campos
+        // nada extra necessário — os checkboxes já têm name="aulas"
+    });
+
+    // se o usuário trocar a data/turno manualmente, reseta as aulas até recarregar
+    dataInput.addEventListener('change', resetAulasUI);
+    turnoSelect.addEventListener('change', resetAulasUI);
+
+    // inicializa
+    resetAulasUI();
+
+})();
+</script>
+
 </body>
 </html>
